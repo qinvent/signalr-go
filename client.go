@@ -163,18 +163,18 @@ func (c *Client) Listen(ctx context.Context, handler Handler) error {
 		return err
 	}
 
-	res, err := c.handshake(ctx, conn)
+	_, err = c.handshake(ctx, conn)
 	if err != nil {
 		return err
 	} else {
-		log.Info("Handshake: success. Resp: ", res)
+		log.Info("Handshake: success. ")
 	}
 
 	err = c.SubscribeAll(ctx, conn)
 	if err != nil {
 		return err
 	} else {
-		log.Info("Subscribe: success. Resp: ", res)
+		log.Info("Subscribe: success.")
 	}
 
 	select {
