@@ -140,7 +140,7 @@ func (c *Client) Listen(ctx context.Context, handler Handler) error {
 		return err
 	}
 
-	conn, resp, err := websocket.Dial(ctx, c.getWssURI(), websocket.DialOptions{
+	conn, resp, err := websocket.Dial(ctx, c.getWssURI(), &websocket.DialOptions{
 		HTTPHeader: http.Header{
 			"Authorization": []string{"Bearer " + token},
 		},
