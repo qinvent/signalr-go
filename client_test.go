@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
-	"github.com/devigned/signalr-go"
+	"github.com/qinvent/signalr-go"
 )
 
 type (
@@ -58,7 +58,7 @@ func (fhm *FancyHandlerMock) OnStart() {
 
 func init() {
 	if err := dotenv.Load(); err != nil {
-		fmt.Println("Failed to load the .env file. If you expected env vars to be loaded from there, they weren't.")
+		log.Info("Failed to load the .env file. If you expected env vars to be loaded from there, they weren't.")
 	}
 	rand.Seed(time.Now().Unix())
 }
@@ -296,14 +296,14 @@ func randomString(prefix string, length int) string {
 	return prefix + string(b)
 }
 
-func (mph *MessagePrinterHandler) Default(ctx context.Context, target string, args []json.RawMessage) error {
-	fmt.Println(target, args)
+func (mph *MessagePrinterHandler) Default(_ context.Context, target string, args []json.RawMessage) error {
+	log.Info(target, args)
 	defer mph.cancel()
 	return nil
 }
 
-func (mph *MessagePrinterHandler) Println(ctx context.Context, message string) error {
-	fmt.Println(message)
+func (mph *MessagePrinterHandler) Println(_ context.Context, message string) error {
+	log.Info(message)
 	defer mph.cancel()
 	return nil
 }

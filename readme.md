@@ -1,4 +1,7 @@
-# Azure SignalR Client for Golang
+# SignalR Client for Golang
+
+This repo is cloned from [devigned/signalr-go](https://github.com/devigned/signalr-go)
+
 [![Go Report Card](https://goreportcard.com/badge/github.com/devigned/signalr-go)](https://goreportcard.com/report/github.com/devigned/signalr-go)
 [![godoc](https://godoc.org/github.com/devigned/signalr-go?status.svg)](https://godoc.org/github.com/devigned/signalr-go)
 [![Build Status](https://travis-ci.org/devigned/signalr-go.svg?branch=master)](https://travis-ci.org/devigned/signalr-go)

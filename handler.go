@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	log "github.com/sirupsen/logrus"
 	"reflect"
 )
 
@@ -61,7 +62,7 @@ func dispatch(ctx context.Context, handler Handler, msg *InvocationMessage) erro
 				newArgPtr := newArg.Interface()
 				err := json.Unmarshal(msg.Arguments[i], &newArgPtr)
 				if err != nil {
-					fmt.Println(err)
+					log.Info(err)
 					return handler.Default(ctx, msg.Target, msg.Arguments)
 				}
 
