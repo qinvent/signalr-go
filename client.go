@@ -22,20 +22,20 @@ import (
 	"nhooyr.io/websocket"
 )
 
-type URIFormatterFunc func(string) string
+type URIFormatterFunc func(string) interface{}
 
 type (
 	// Client represents a bidirectional connection to Azure SignalR
 	Client struct {
-	name          string
-	hubName       string
-	audType       audienceType
-	parsedConnStr *ParsedConnString
-	nMutex        sync.RWMutex
-	negotiateRes  *negotiateResponse
-	URIFormatter  URIFormatterFunc
-	conn		  *websocket.Conn
-}
+		name          string
+		hubName       string
+		audType       audienceType
+		ParsedConnStr *ParsedConnString
+		nMutex        sync.RWMutex
+		NegotiateRes  *negotiateResponse
+		URIFormatter  URIFormatterFunc
+		conn          *websocket.Conn
+	}
 
 	// ClientOption provides a way to configure a client at time of construction
 	ClientOption func(*Client) error
@@ -43,7 +43,7 @@ type (
 	// NegotiateResponse is the structure to respond to a client for access to a hub resource
 	negotiateResponse struct {
 		ConnectionID        string      `json:"connectionId,omitempty"`
-		ConnectionToken		string		`json:"connectionToken,omitempty"`
+		ConnectionToken     string      `json:"connectionToken,omitempty"`
 		AvailableTransports []transport `json:"availableTransports"`
 	}
 
@@ -120,7 +120,7 @@ func NewClient(connStr string, hubName string, opts ...ClientOption) (*Client, e
 
 	client := &Client{
 		hubName:       hubName,
-		parsedConnStr: parsed,
+		ParsedConnStr: parsed,
 		audType:       clientAudienceType,
 		name:          uuid.Must(uuid.NewRandom()).String(),
 	}
@@ -183,7 +183,7 @@ func (c *Client) Listen(ctx context.Context, handler Handler) error {
 		for {
 			bits, err := c.readConn(ctx, conn)
 			if err != nil {
-				c.negotiateRes = nil
+				c.NegotiateRes = nil
 				if err.Error() == "failed to get reader: context canceled" {
 					return err
 				}
@@ -432,7 +432,7 @@ func (c *Client) ReceiveResponse(ctx context.Context) (map[string]interface{}, e
 	return hsRes, nil
 }
 
-func (c *Client) SendRequest(ctx context.Context, msg interface{}) (error) {
+func (c *Client) SendRequest(ctx context.Context, msg interface{}) error {
 	bits, err := json.Marshal(msg)
 
 	wrCloser, err := c.conn.Writer(ctx, websocket.MessageText)
@@ -464,27 +464,39 @@ func (c *Client) generateToken(audience string, expiresAfter time.Duration) (str
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString([]byte(c.parsedConnStr.Key))
+	return token.SignedString([]byte(c.ParsedConnStr.Key))
 }
 
 func (c *Client) getNegotiateURI() string {
 	if c.URIFormatter != nil {
-		return c.URIFormatter("negotiate")
+		uri := c.URIFormatter("negotiate")
+		if uri != nil {
+			return uri.(string)
+		}
 	}
-	wssBaseURI := strings.Replace(c.getWssAudience(), "https://", "wss://", 1)
-	return wssBaseURI + "id=" + c.negotiateRes.ConnectionToken
+	endpoint := c.ParsedConnStr.Endpoint
+	return fmt.Sprintf("%s/%s/%s", endpoint, c.audType, "negotiate?hub="+c.hubName)
 }
 
 func (c *Client) getWssURI() string {
 	if c.URIFormatter != nil {
-		return c.URIFormatter("wss")
+		uri := c.URIFormatter("wss")
+		if uri != nil {
+			return uri.(string)
+		}
 	}
 	wssBaseURI := strings.Replace(c.getWssAudience(), "https://", "wss://", 1)
-	return wssBaseURI + "id=" + c.negotiateRes.ConnectionToken
+	return wssBaseURI + "&id=" + c.NegotiateRes.ConnectionID
 }
 
 func (c *Client) getWssAudience() string {
-	return fmt.Sprintf("%s?", c.parsedConnStr.Endpoint.String())
+	if c.URIFormatter != nil {
+		uri := c.URIFormatter("wssaudience")
+		if uri != nil {
+			return uri.(string)
+		}
+	}
+	return fmt.Sprintf("%s/%s/?hub=%s", c.ParsedConnStr.Endpoint.String(), c.audType, strings.ToLower(c.hubName))
 }
 
 func (c *Client) getBroadcastURI() string {
@@ -508,7 +520,13 @@ func (c *Client) getUsersGroupsURI(userID string) string {
 }
 
 func (c *Client) getBaseURI() string {
-	return fmt.Sprintf("%s/api/v1/hubs/%s", c.parsedConnStr.Endpoint, c.hubName)
+	if c.URIFormatter != nil {
+		uri := c.URIFormatter("base")
+		if uri != nil || uri.(string) != "" {
+			return uri.(string)
+		}
+	}
+	return fmt.Sprintf("%s/api/v1/hubs/%s", c.ParsedConnStr.Endpoint, c.hubName)
 }
 
 func newHTTPClient() *http.Client {
@@ -528,7 +546,7 @@ func (c *Client) negotiateOnce(ctx context.Context) error {
 	c.nMutex.Lock()
 	defer c.nMutex.Unlock()
 
-	if c.negotiateRes == nil {
+	if c.NegotiateRes == nil {
 		res, err := c.negotiate(ctx)
 		if err != nil {
 			return err
@@ -545,16 +563,14 @@ func (c *Client) negotiateOnce(ctx context.Context) error {
 			return errors.New("WebSockets transport is not supported by the service")
 		}
 
-		c.negotiateRes = res
+		c.NegotiateRes = res
 	}
 
 	return nil
 }
 
 func (c *Client) negotiate(ctx context.Context) (*negotiateResponse, error) {
-	endpoint := c.parsedConnStr.Endpoint
-	negotiateURI := fmt.Sprintf("%s/%s", endpoint, "negotiate?negotiateVersion="+c.hubName)
-	req, err := http.NewRequest(http.MethodPost, negotiateURI, nil)
+	req, err := http.NewRequest(http.MethodPost, c.getNegotiateURI(), nil)
 	if err != nil {
 		return nil, err
 	}
