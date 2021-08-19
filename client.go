@@ -185,12 +185,6 @@ func (c *Client) Listen(ctx context.Context, handler Handler) error {
 		}
 
 		for {
-			//res, err = c.KeepAlive(ctx, conn)
-			//if err != nil {
-			//	return err
-			//} else {
-			//	log.Info("Keepalive: success. Resp: ", res)
-			//}
 			bits, err := readConn(ctx, conn)
 			if err != nil {
 				if err.Error() == "failed to get reader: context canceled" {
@@ -198,14 +192,12 @@ func (c *Client) Listen(ctx context.Context, handler Handler) error {
 				}
 				return err
 			}
-
 			var msg InvocationMessage
 			err = json.Unmarshal(bits, &msg)
 			if err != nil {
 				return err
 			}
 
-			//log.Info(string(bits))
 			switch msg.Type {
 			case pingMessageType:
 				// nop
@@ -216,7 +208,6 @@ func (c *Client) Listen(ctx context.Context, handler Handler) error {
 			case closeMessageType:
 				return conn.Close(websocket.StatusNormalClosure, "received close message from SignalR service")
 			}
-
 		}
 	}
 
@@ -422,10 +413,13 @@ func (c *Client) handshake(ctx context.Context, conn *websocket.Conn) (map[strin
 	return c.Invoke(ctx, conn, hsReq)
 }
 
+type KeepAliveMsg struct {
+	Type messageType
+}
+
 func (c *Client) KeepAlive(ctx context.Context, conn *websocket.Conn) (map[string]interface{}, error) {
-	msg := InvocationMessage{
-		Type:      pingMessageType,
-		Target:    "SubscribeByClientId",
+	msg := KeepAliveMsg{
+		Type: pingMessageType,
 	}
 	return c.Invoke(ctx, conn, msg)
 }
@@ -601,6 +595,7 @@ func (c *Client) negotiate(ctx context.Context) (*negotiateResponse, error) {
 
 	if err != nil {
 		log.Info(err)
+		return nil, err
 	}
 
 	bodyBits, err := ioutil.ReadAll(res.Body)
