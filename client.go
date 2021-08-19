@@ -202,9 +202,9 @@ func (c *Client) Listen(ctx context.Context, handler Handler) error {
 			case pingMessageType:
 				// nop
 			case invocationMessageType:
-				dispatch(ctx, handler, &msg)
+				_ = dispatch(ctx, handler, &msg)
 			case streamInvocationMessageType, streamItemMessageType, cancelInvocationMessageType, completionMessageType:
-				return errors.New("unhandled InvocationMessage type: " + string(msg.Type))
+				return errors.New(fmt.Sprintf("unhandled InvocationMessage type: %v", msg.Type))
 			case closeMessageType:
 				return conn.Close(websocket.StatusNormalClosure, "received close message from SignalR service")
 			}
@@ -385,7 +385,7 @@ func (c *Client) do(ctx context.Context, req *http.Request) (*http.Response, err
 }
 
 func readConn(ctx context.Context, conn *websocket.Conn) ([]byte, error) {
-	readerCtx, cancel := context.WithTimeout(ctx, 50*time.Second)
+	readerCtx, cancel := context.WithTimeout(ctx, 2*time.Hour)
 	defer cancel()
 
 	_, reader, err := conn.Reader(readerCtx)
