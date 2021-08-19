@@ -3,7 +3,6 @@ package signalr_test
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"math/rand"
 	"os"
 	"testing"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/alexsasharegan/dotenv"
 	"github.com/google/uuid"
+	log "github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"

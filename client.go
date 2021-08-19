@@ -3,6 +3,7 @@
 package signalr
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -21,16 +22,20 @@ import (
 	"nhooyr.io/websocket"
 )
 
+type URIFormatterFunc func(string) string
+
 type (
 	// Client represents a bidirectional connection to Azure SignalR
 	Client struct {
-		name          string
-		hubName       string
-		audType       audienceType
-		parsedConnStr *ParsedConnString
-		nMutex        sync.RWMutex
-		negotiateRes  *negotiateResponse
-	}
+	name          string
+	hubName       string
+	audType       audienceType
+	parsedConnStr *ParsedConnString
+	nMutex        sync.RWMutex
+	negotiateRes  *negotiateResponse
+	URIFormatter  URIFormatterFunc
+	conn		  *websocket.Conn
+}
 
 	// ClientOption provides a way to configure a client at time of construction
 	ClientOption func(*Client) error
@@ -131,7 +136,6 @@ func NewClient(connStr string, hubName string, opts ...ClientOption) (*Client, e
 
 // Listen will start the WebSocket connection for the client
 func (c *Client) Listen(ctx context.Context, handler Handler) error {
-	c.negotiateRes = nil
 	err := c.negotiateOnce(ctx)
 	if err != nil {
 		return err
@@ -162,19 +166,12 @@ func (c *Client) Listen(ctx context.Context, handler Handler) error {
 	if err != nil {
 		return err
 	}
-
-	_, err = c.handshake(ctx, conn)
+	c.conn = conn
+	_, err = c.handshake(ctx)
 	if err != nil {
 		return err
 	} else {
-		log.Info("Handshake: success. ")
-	}
-
-	err = c.SubscribeAll(ctx, conn)
-	if err != nil {
-		return err
-	} else {
-		log.Info("Subscribe: success.")
+		log.Info("Handshake: success.")
 	}
 
 	select {
@@ -183,10 +180,10 @@ func (c *Client) Listen(ctx context.Context, handler Handler) error {
 		if h, ok := handler.(NotifiedHandler); ok {
 			h.OnStart()
 		}
-
 		for {
-			bits, err := readConn(ctx, conn)
+			bits, err := c.readConn(ctx, conn)
 			if err != nil {
+				c.negotiateRes = nil
 				if err.Error() == "failed to get reader: context canceled" {
 					return err
 				}
@@ -315,17 +312,12 @@ func (c *Client) RemoveUserFromAllGroups(ctx context.Context, userID string) err
 
 // SendInvocation will send an `InvocationMessage` to the hub
 func (c *Client) SendInvocation(ctx context.Context, uri string, msg *InvocationMessage) error {
-	if uri == ""{
-		uri = "wss://api.dp.tracksynq.com/v1/publisher" + "?id=" + c.negotiateRes.ConnectionToken
-		//uri = uri + `&type=1&target=SubscribeByClientId&arguments[]="2"&arguments[]="ALL"`
-	}
-
-	_, err := json.Marshal(msg)
+	bits, err := json.Marshal(msg)
 	if err != nil {
 		return err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, uri, nil)
+	req, err := http.NewRequest(http.MethodPost, uri, bytes.NewReader(bits))
 	if err != nil {
 		return err
 	}
@@ -384,10 +376,9 @@ func (c *Client) do(ctx context.Context, req *http.Request) (*http.Response, err
 	return client.Do(req)
 }
 
-func readConn(ctx context.Context, conn *websocket.Conn) ([]byte, error) {
-	readerCtx, cancel := context.WithTimeout(ctx, 2*time.Hour)
+func (c *Client) readConn(ctx context.Context, conn *websocket.Conn) ([]byte, error) {
+	readerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-
 	_, reader, err := conn.Reader(readerCtx)
 	if err != nil {
 		return nil, err
@@ -405,45 +396,22 @@ func readConn(ctx context.Context, conn *websocket.Conn) ([]byte, error) {
 	return bits, nil
 }
 
-func (c *Client) handshake(ctx context.Context, conn *websocket.Conn) (map[string]interface{}, error) {
-	hsReq := handshakeRequest{
+func (c *Client) handshake(ctx context.Context) (map[string]interface{}, error) {
+	msg := handshakeRequest{
 		Protocol: "json",
 		Version:  1,
 	}
-	return c.Invoke(ctx, conn, hsReq)
-}
-
-type KeepAliveMsg struct {
-	Type messageType
-}
-
-func (c *Client) KeepAlive(ctx context.Context, conn *websocket.Conn) (map[string]interface{}, error) {
-	msg := KeepAliveMsg{
-		Type: pingMessageType,
-	}
-	return c.Invoke(ctx, conn, msg)
-}
-
-func (c *Client) SubscribeAll(ctx context.Context, conn *websocket.Conn) (error) {
-	msg, err := NewInvocationMessage("SubscribeByClientId", "2", "ALL")
+	err := c.SendRequest(ctx, msg)
 	if err == nil {
-		return c.SendRequest(ctx, conn, msg)
-	}
-	return errors.New("failed to subscribe")
-}
-
-func (c *Client) Invoke(ctx context.Context, conn *websocket.Conn, msg interface{}) (map[string]interface{}, error) {
-	err := c.SendRequest(ctx, conn, msg)
-	if err == nil {
-		return c.ReceiveResponse(ctx, conn)
+		return c.ReceiveResponse(ctx)
 	} else {
-		log.Error("Sending failed")
+		log.Error("Handshake request failed")
 		return nil, err
 	}
 }
 
-func (c *Client) ReceiveResponse(ctx context.Context, conn *websocket.Conn) (map[string]interface{}, error) {
-	_, resp, err := conn.Reader(ctx)
+func (c *Client) ReceiveResponse(ctx context.Context) (map[string]interface{}, error) {
+	_, resp, err := c.conn.Reader(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -464,10 +432,10 @@ func (c *Client) ReceiveResponse(ctx context.Context, conn *websocket.Conn) (map
 	return hsRes, nil
 }
 
-func (c *Client) SendRequest(ctx context.Context, conn *websocket.Conn, msg interface{}) (error) {
+func (c *Client) SendRequest(ctx context.Context, msg interface{}) (error) {
 	bits, err := json.Marshal(msg)
 
-	wrCloser, err := conn.Writer(ctx, websocket.MessageText)
+	wrCloser, err := c.conn.Writer(ctx, websocket.MessageText)
 	if err != nil {
 		return err
 	}
@@ -499,13 +467,24 @@ func (c *Client) generateToken(audience string, expiresAfter time.Duration) (str
 	return token.SignedString([]byte(c.parsedConnStr.Key))
 }
 
+func (c *Client) getNegotiateURI() string {
+	if c.URIFormatter != nil {
+		return c.URIFormatter("negotiate")
+	}
+	wssBaseURI := strings.Replace(c.getWssAudience(), "https://", "wss://", 1)
+	return wssBaseURI + "id=" + c.negotiateRes.ConnectionToken
+}
+
 func (c *Client) getWssURI() string {
+	if c.URIFormatter != nil {
+		return c.URIFormatter("wss")
+	}
 	wssBaseURI := strings.Replace(c.getWssAudience(), "https://", "wss://", 1)
 	return wssBaseURI + "id=" + c.negotiateRes.ConnectionToken
 }
 
 func (c *Client) getWssAudience() string {
-	return fmt.Sprintf("%s?", c.parsedConnStr.Endpoint.String(), )
+	return fmt.Sprintf("%s?", c.parsedConnStr.Endpoint.String())
 }
 
 func (c *Client) getBroadcastURI() string {

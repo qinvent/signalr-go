@@ -6,7 +6,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"os"
 
-	"github.com/devigned/signalr-go"
+	"github.com/qinvent/signalr-go"
 )
 
 func ExampleNewClient() {
