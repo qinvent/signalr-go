@@ -3,9 +3,10 @@ package signalr_test
 import (
 	"context"
 	"fmt"
+	log "github.com/sirupsen/logrus"
 	"os"
 
-	"github.com/devigned/signalr-go"
+	"github.com/qinvent/signalr-go"
 )
 
 func ExampleNewClient() {
@@ -13,11 +14,11 @@ func ExampleNewClient() {
 	hubName := "chat"
 	client, err := signalr.NewClient(connStr, hubName)
 	if err != nil {
-		fmt.Println(err)
+		log.Info(err)
 		return
 	}
 
-	fmt.Println(client.GetHub())
+	log.Info(client.GetHub())
 
 	// Output: chat
 }
@@ -28,11 +29,11 @@ func ExampleClientWithName() {
 	clientName := "myName123"
 	client, err := signalr.NewClient(connStr, hubName, signalr.ClientWithName(clientName))
 	if err != nil {
-		fmt.Println(err)
+		log.Info(err)
 		return
 	}
 
-	fmt.Println(client.GetName()) // client can be addressed directly from this name
+	log.Info(client.GetName()) // client can be addressed directly from this name
 
 	// Output: myName123
 }
@@ -42,7 +43,7 @@ func ExampleClient_Listen() {
 	hubName := randomName("example", 5)
 	client, err := signalr.NewClient(connStr, hubName)
 	if err != nil {
-		fmt.Println(err)
+		log.Info(err)
 		return
 	}
 
@@ -51,7 +52,7 @@ func ExampleClient_Listen() {
 	started := make(chan struct{}, 1)
 	mph := &MessagePrinterHandler{
 		onStart: func() {
-			fmt.Println("I'm listening")
+			log.Info("I'm listening")
 			started <- struct{}{}
 			cancel()
 		},
@@ -61,7 +62,7 @@ func ExampleClient_Listen() {
 	go func() {
 		err = client.Listen(listenCtx, mph)
 		if err != nil {
-			fmt.Println(err)
+			log.Info(err)
 			started <- struct{}{}
 		}
 	}()
@@ -76,7 +77,7 @@ func ExampleClient_SendToUser() {
 	clientName := randomName("client", 5)
 	client, err := signalr.NewClient(connStr, hubName, signalr.ClientWithName(clientName))
 	if err != nil {
-		fmt.Println(err)
+		log.Info(err)
 		return
 	}
 
@@ -93,7 +94,7 @@ func ExampleClient_SendToUser() {
 	go func() {
 		err = client.Listen(ctx, mph)
 		if err != nil {
-			fmt.Println(err)
+			log.Info(err)
 			started <- struct{}{}
 		}
 	}()
@@ -101,13 +102,13 @@ func ExampleClient_SendToUser() {
 
 	msg, err := signalr.NewInvocationMessage("Println", "hello only to you")
 	if err != nil {
-		fmt.Println(err)
+		log.Info(err)
 		return
 	}
 
 	err = client.SendToUser(ctx, msg, clientName)
 	if err != nil {
-		fmt.Println(err)
+		log.Info(err)
 		return
 	}
 
@@ -122,7 +123,7 @@ func ExampleClient_BroadcastAll() {
 	hubName := randomName("example", 5)
 	client, err := signalr.NewClient(connStr, hubName)
 	if err != nil {
-		fmt.Println(err)
+		log.Info(err)
 		return
 	}
 
@@ -139,7 +140,7 @@ func ExampleClient_BroadcastAll() {
 	go func() {
 		err = client.Listen(ctx, mph)
 		if err != nil {
-			fmt.Println(err)
+			log.Info(err)
 			started <- struct{}{}
 		}
 	}()
@@ -147,13 +148,13 @@ func ExampleClient_BroadcastAll() {
 
 	msg, err := signalr.NewInvocationMessage("Println", "hello world!")
 	if err != nil {
-		fmt.Println(err)
+		log.Info(err)
 		return
 	}
 
 	err = client.BroadcastAll(ctx, msg)
 	if err != nil {
-		fmt.Println(err)
+		log.Info(err)
 		return
 	}
 
@@ -169,14 +170,14 @@ func ExampleClient_BroadcastGroup() {
 	groupName := randomName("group", 5)
 	client, err := signalr.NewClient(connStr, hubName)
 	if err != nil {
-		fmt.Println(err)
+		log.Info(err)
 		return
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if err := client.AddUserToGroup(ctx, groupName, client.GetName()); err != nil {
-		fmt.Println(err)
+		log.Info(err)
 		return
 	}
 
@@ -191,7 +192,7 @@ func ExampleClient_BroadcastGroup() {
 	go func() {
 		err = client.Listen(ctx, mph)
 		if err != nil {
-			fmt.Println(err)
+			log.Info(err)
 			started <- struct{}{}
 		}
 	}()
@@ -199,13 +200,13 @@ func ExampleClient_BroadcastGroup() {
 
 	msg, err := signalr.NewInvocationMessage("Println", "I'm part of the cool group")
 	if err != nil {
-		fmt.Println(err)
+		log.Info(err)
 		return
 	}
 
 	err = client.BroadcastGroup(ctx, msg, groupName)
 	if err != nil {
-		fmt.Println(err)
+		log.Info(err)
 		return
 	}
 
@@ -222,7 +223,7 @@ func ExampleClient_AddUserToGroup() {
 	clientName := "client42"
 	client, err := signalr.NewClient(connStr, hubName, signalr.ClientWithName(clientName))
 	if err != nil {
-		fmt.Println(err)
+		log.Info(err)
 		return
 	}
 
@@ -230,7 +231,7 @@ func ExampleClient_AddUserToGroup() {
 	defer cancel()
 
 	if err := client.AddUserToGroup(ctx, groupName, client.GetName()); err != nil {
-		fmt.Println(err)
+		log.Info(err)
 		return
 	}
 
@@ -245,7 +246,7 @@ func ExampleClient_RemoveUserFromAllGroups() {
 	clientName := "client42"
 	client, err := signalr.NewClient(connStr, hubName, signalr.ClientWithName(clientName))
 	if err != nil {
-		fmt.Println(err)
+		log.Info(err)
 		return
 	}
 
@@ -253,7 +254,7 @@ func ExampleClient_RemoveUserFromAllGroups() {
 	defer cancel()
 
 	if err := client.RemoveUserFromAllGroups(ctx, client.GetName()); err != nil {
-		fmt.Println(err)
+		log.Info(err)
 		return
 	}
 

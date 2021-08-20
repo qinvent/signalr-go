@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	log "github.com/sirupsen/logrus"
+
 	"io/ioutil"
 	"net/http"
 	"strings"
@@ -20,15 +22,19 @@ import (
 	"nhooyr.io/websocket"
 )
 
+type URIFormatterFunc func(string) interface{}
+
 type (
 	// Client represents a bidirectional connection to Azure SignalR
 	Client struct {
 		name          string
 		hubName       string
 		audType       audienceType
-		parsedConnStr *ParsedConnString
+		ParsedConnStr *ParsedConnString
 		nMutex        sync.RWMutex
-		negotiateRes  *negotiateResponse
+		NegotiateRes  *negotiateResponse
+		URIFormatter  URIFormatterFunc
+		conn          *websocket.Conn
 	}
 
 	// ClientOption provides a way to configure a client at time of construction
@@ -37,6 +43,7 @@ type (
 	// NegotiateResponse is the structure to respond to a client for access to a hub resource
 	negotiateResponse struct {
 		ConnectionID        string      `json:"connectionId,omitempty"`
+		ConnectionToken     string      `json:"connectionToken,omitempty"`
 		AvailableTransports []transport `json:"availableTransports"`
 	}
 
@@ -113,7 +120,7 @@ func NewClient(connStr string, hubName string, opts ...ClientOption) (*Client, e
 
 	client := &Client{
 		hubName:       hubName,
-		parsedConnStr: parsed,
+		ParsedConnStr: parsed,
 		audType:       clientAudienceType,
 		name:          uuid.Must(uuid.NewRandom()).String(),
 	}
@@ -132,6 +139,8 @@ func (c *Client) Listen(ctx context.Context, handler Handler) error {
 	err := c.negotiateOnce(ctx)
 	if err != nil {
 		return err
+	} else {
+		log.Info("Negotiate: success")
 	}
 
 	audience := c.getWssAudience()
@@ -148,17 +157,21 @@ func (c *Client) Listen(ctx context.Context, handler Handler) error {
 	})
 	if resp != nil {
 		defer func() {
-			_ = resp.Body.Close()
+			if resp.Body != nil {
+				_ = resp.Body.Close()
+			}
 		}()
 	}
 
 	if err != nil {
 		return err
 	}
-
-	err = c.handshake(ctx, conn)
+	c.conn = conn
+	_, err = c.handshake(ctx)
 	if err != nil {
 		return err
+	} else {
+		log.Info("Handshake: success.")
 	}
 
 	select {
@@ -167,34 +180,31 @@ func (c *Client) Listen(ctx context.Context, handler Handler) error {
 		if h, ok := handler.(NotifiedHandler); ok {
 			h.OnStart()
 		}
-
 		for {
-			bits, err := readConn(ctx, conn)
+			bits, err := c.readConn(ctx, conn)
 			if err != nil {
+				c.NegotiateRes = nil
 				if err.Error() == "failed to get reader: context canceled" {
-					return nil
+					return err
 				}
 				return err
 			}
-
 			var msg InvocationMessage
 			err = json.Unmarshal(bits, &msg)
 			if err != nil {
 				return err
 			}
 
-			//fmt.Println(string(bits))
 			switch msg.Type {
 			case pingMessageType:
 				// nop
 			case invocationMessageType:
-				return dispatch(ctx, handler, &msg)
+				_ = dispatch(ctx, handler, &msg)
 			case streamInvocationMessageType, streamItemMessageType, cancelInvocationMessageType, completionMessageType:
-				return errors.New("unhandled InvocationMessage type: " + string(msg.Type))
+				return errors.New(fmt.Sprintf("unhandled InvocationMessage type: %v", msg.Type))
 			case closeMessageType:
 				return conn.Close(websocket.StatusNormalClosure, "received close message from SignalR service")
 			}
-
 		}
 	}
 
@@ -325,7 +335,7 @@ func (c *Client) SendInvocation(ctx context.Context, uri string, msg *Invocation
 	defer closeRes(res)
 
 	if err != nil {
-		fmt.Println(err)
+		log.Info(err)
 	}
 
 	bodyBits, err := ioutil.ReadAll(res.Body)
@@ -366,10 +376,9 @@ func (c *Client) do(ctx context.Context, req *http.Request) (*http.Response, err
 	return client.Do(req)
 }
 
-func readConn(ctx context.Context, conn *websocket.Conn) ([]byte, error) {
-	readerCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+func (c *Client) readConn(ctx context.Context, conn *websocket.Conn) ([]byte, error) {
+	readerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-
 	_, reader, err := conn.Reader(readerCtx)
 	if err != nil {
 		return nil, err
@@ -387,18 +396,46 @@ func readConn(ctx context.Context, conn *websocket.Conn) ([]byte, error) {
 	return bits, nil
 }
 
-func (c *Client) handshake(ctx context.Context, conn *websocket.Conn) error {
-	hsReq := handshakeRequest{
+func (c *Client) handshake(ctx context.Context) (map[string]interface{}, error) {
+	msg := handshakeRequest{
 		Protocol: "json",
 		Version:  1,
 	}
+	err := c.SendRequest(ctx, msg)
+	if err == nil {
+		return c.ReceiveResponse(ctx)
+	} else {
+		log.Error("Handshake request failed")
+		return nil, err
+	}
+}
 
-	bits, err := json.Marshal(hsReq)
+func (c *Client) ReceiveResponse(ctx context.Context) (map[string]interface{}, error) {
+	_, resp, err := c.conn.Reader(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	wrCloser, err := conn.Writer(ctx, websocket.MessageText)
+	bits, err := ioutil.ReadAll(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	if bits[len(bits)-1] == messageTerminator {
+		bits = bits[0 : len(bits)-1]
+	}
+
+	var hsRes map[string]interface{}
+	if err := json.Unmarshal(bits, &hsRes); err != nil {
+		return nil, err
+	}
+	return hsRes, nil
+}
+
+func (c *Client) SendRequest(ctx context.Context, msg interface{}) error {
+	bits, err := json.Marshal(msg)
+
+	wrCloser, err := c.conn.Writer(ctx, websocket.MessageText)
 	if err != nil {
 		return err
 	}
@@ -408,31 +445,8 @@ func (c *Client) handshake(ctx context.Context, conn *websocket.Conn) error {
 		return err
 	}
 
-	if err := wrCloser.Close(); err != nil {
+	if err = wrCloser.Close(); err != nil {
 		return err
-	}
-
-	_, resp, err := conn.Reader(ctx)
-	if err != nil {
-		return err
-	}
-
-	bits, err = ioutil.ReadAll(resp)
-	if err != nil {
-		return err
-	}
-
-	if bits[len(bits)-1] == messageTerminator {
-		bits = bits[0 : len(bits)-1]
-	}
-
-	var hsRes handshakeResponse
-	if err := json.Unmarshal(bits, &hsRes); err != nil {
-		return err
-	}
-
-	if hsRes.Error != "" {
-		return errors.New(hsRes.Error)
 	}
 	return nil
 }
@@ -450,16 +464,39 @@ func (c *Client) generateToken(audience string, expiresAfter time.Duration) (str
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString([]byte(c.parsedConnStr.Key))
+	return token.SignedString([]byte(c.ParsedConnStr.Key))
+}
+
+func (c *Client) getNegotiateURI() string {
+	if c.URIFormatter != nil {
+		uri := c.URIFormatter("negotiate")
+		if uri != nil {
+			return uri.(string)
+		}
+	}
+	endpoint := c.ParsedConnStr.Endpoint
+	return fmt.Sprintf("%s/%s/%s", endpoint, c.audType, "negotiate?hub="+c.hubName)
 }
 
 func (c *Client) getWssURI() string {
+	if c.URIFormatter != nil {
+		uri := c.URIFormatter("wss")
+		if uri != nil {
+			return uri.(string)
+		}
+	}
 	wssBaseURI := strings.Replace(c.getWssAudience(), "https://", "wss://", 1)
-	return wssBaseURI + "&id=" + c.negotiateRes.ConnectionID
+	return wssBaseURI + "&id=" + c.NegotiateRes.ConnectionID
 }
 
 func (c *Client) getWssAudience() string {
-	return fmt.Sprintf("%s/%s/?hub=%s", c.parsedConnStr.Endpoint.String(), c.audType, strings.ToLower(c.hubName))
+	if c.URIFormatter != nil {
+		uri := c.URIFormatter("wssaudience")
+		if uri != nil {
+			return uri.(string)
+		}
+	}
+	return fmt.Sprintf("%s/%s/?hub=%s", c.ParsedConnStr.Endpoint.String(), c.audType, strings.ToLower(c.hubName))
 }
 
 func (c *Client) getBroadcastURI() string {
@@ -483,7 +520,13 @@ func (c *Client) getUsersGroupsURI(userID string) string {
 }
 
 func (c *Client) getBaseURI() string {
-	return fmt.Sprintf("%s/api/v1/hubs/%s", c.parsedConnStr.Endpoint, strings.ToLower(c.hubName))
+	if c.URIFormatter != nil {
+		uri := c.URIFormatter("base")
+		if uri != nil || uri.(string) != "" {
+			return uri.(string)
+		}
+	}
+	return fmt.Sprintf("%s/api/v1/hubs/%s", c.ParsedConnStr.Endpoint, c.hubName)
 }
 
 func newHTTPClient() *http.Client {
@@ -503,7 +546,7 @@ func (c *Client) negotiateOnce(ctx context.Context) error {
 	c.nMutex.Lock()
 	defer c.nMutex.Unlock()
 
-	if c.negotiateRes == nil {
+	if c.NegotiateRes == nil {
 		res, err := c.negotiate(ctx)
 		if err != nil {
 			return err
@@ -520,16 +563,14 @@ func (c *Client) negotiateOnce(ctx context.Context) error {
 			return errors.New("WebSockets transport is not supported by the service")
 		}
 
-		c.negotiateRes = res
+		c.NegotiateRes = res
 	}
 
 	return nil
 }
 
 func (c *Client) negotiate(ctx context.Context) (*negotiateResponse, error) {
-	endpoint := c.parsedConnStr.Endpoint
-	negotiateURI := fmt.Sprintf("%s/%s/%s", endpoint, c.audType, "negotiate?hub="+c.hubName)
-	req, err := http.NewRequest(http.MethodPost, negotiateURI, nil)
+	req, err := http.NewRequest(http.MethodPost, c.getNegotiateURI(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -548,7 +589,8 @@ func (c *Client) negotiate(ctx context.Context) (*negotiateResponse, error) {
 	defer closeRes(res)
 
 	if err != nil {
-		fmt.Println(err)
+		log.Info(err)
+		return nil, err
 	}
 
 	bodyBits, err := ioutil.ReadAll(res.Body)
@@ -580,7 +622,7 @@ func NewInvocationMessage(target string, args ...interface{}) (*InvocationMessag
 		if err != nil {
 			return nil, err
 		}
-		jsonArgs[i] = json.RawMessage(bits)
+		jsonArgs[i] = bits
 	}
 
 	return &InvocationMessage{
